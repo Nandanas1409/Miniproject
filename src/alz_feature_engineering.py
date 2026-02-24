@@ -9,8 +9,10 @@ import os
 # ==========================
 INPUT_PATH = "data/raw/alzheimers_dataset.csv"
 OUTPUT_PATH = "data/processed/alz_window_features.csv"
+
 WINDOW_SIZE = 512
-FS = 256  # assumed sampling frequency
+STEP = WINDOW_SIZE // 2   # 50% overlap
+FS = 256
 
 os.makedirs("data/processed", exist_ok=True)
 
@@ -24,7 +26,7 @@ labels = []
 
 print("Extracting enhanced spectral + ratio features...")
 
-for start in range(0, len(df) - WINDOW_SIZE, WINDOW_SIZE):
+for start in range(0, len(df) - WINDOW_SIZE, STEP):
     window = df.iloc[start:start + WINDOW_SIZE]
     feature_vector = []
 
@@ -54,11 +56,9 @@ for start in range(0, len(df) - WINDOW_SIZE, WINDOW_SIZE):
 
         feature_vector.extend([delta, theta, alpha, beta])
 
-        # Safe ratio calculation
         def safe_ratio(a, b):
             return a / b if b != 0 else 0
 
-        # Add multiple spectral ratios
         feature_vector.extend([
             safe_ratio(theta, alpha),
             safe_ratio(delta, alpha),
@@ -71,7 +71,6 @@ for start in range(0, len(df) - WINDOW_SIZE, WINDOW_SIZE):
     features.append(feature_vector)
     labels.append(window["status"].mode()[0])
 
-# Create feature names
 feature_names = []
 for ch in channels:
     feature_names.extend([
@@ -99,4 +98,4 @@ features_df.to_csv(OUTPUT_PATH, index=False)
 
 print("Feature extraction completed.")
 print("Total windows:", len(features_df))
-print("Total features per window:", len(feature_names))
+print("Features per window:", len(feature_names))

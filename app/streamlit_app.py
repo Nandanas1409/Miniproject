@@ -3,9 +3,9 @@ import pandas as pd
 import numpy as np
 import joblib
 from src.alz_feature_pipeline import extract_alz_features
-from src.depression_feature_pipeline import preprocess_depression_data
+from src.alz_inference import predict_subject
 from src.eeg_topomap import plot_topomap
-
+from src.depression_feature_pipeline import preprocess_depression_data
 # ==========================================================
 # Page Configuration
 # ==========================================================
@@ -21,19 +21,13 @@ st.sidebar.warning(
     "⚠️ Academic Demonstration Only.\n\n"
     "This system does NOT replace clinical diagnosis."
 )
-
-# ==========================================================
-# Load Models
-# ==========================================================
 @st.cache_resource
-def load_models():
-    alz_model = joblib.load("models/alz_rf_model.pkl")
+def load_depression_models():
     dep_model = joblib.load("models/depression_rf_model.pkl")
     dep_scaler = joblib.load("models/depression_scaler.pkl")
-    return alz_model, dep_model, dep_scaler
+    return dep_model, dep_scaler
 
-alz_model, dep_model, dep_scaler = load_models()
-
+dep_model, dep_scaler = load_depression_models()
 # ==========================================================
 # Tabs
 # ==========================================================
@@ -47,7 +41,7 @@ with tab1:
     st.header("Alzheimer’s Detection from Raw EEG")
 
     alz_file = st.file_uploader(
-        "Upload Raw EEG CSV (16 channels, ≥512 samples)",
+        "Upload Raw EEG CSV (≥512 samples)",
         type=["csv"],
         key="alz_upload"
     )
@@ -66,148 +60,147 @@ with tab1:
             # ================= Feature Extraction =================
             feature_df = extract_alz_features(raw_df)
 
-            # ================= Prediction =================
-            probabilities = alz_model.predict_proba(feature_df)[:, 1]
-            patient_score = np.mean(probabilities)
-
-            st.subheader("Prediction Result")
-            st.metric("Alzheimer Probability", f"{patient_score:.2f}")
-
-            if patient_score > 0.7:
-                st.error("High Likelihood of Alzheimer’s Pattern")
-            elif patient_score > 0.4:
-                st.warning("Moderate Risk Pattern Detected")
+            if feature_df.empty:
+                st.error("Insufficient data after windowing.")
             else:
-                st.success("Low Alzheimer Pattern Likelihood")
 
-            confidence = abs(patient_score - 0.5) * 2
-            st.write(f"Model Confidence: {confidence:.2f}")
-            st.write(f"Total EEG Windows Analyzed: {len(probabilities)}")
+                # ================= Prediction =================
+                result = predict_subject(feature_df)
 
-            # ======================================================
-            # ========== CHANNEL-LEVEL SLOW WAVE INDEX =============
-            # ======================================================
+                st.subheader("Prediction Result")
 
-            channels = [
-                "Fp1","Fp2","F7","F3","Fz","F4","F8",
-                "T3","C3","Cz","C4","T4",
-                "T5","P3","Pz","P4"
-            ]
+                st.metric(
+                    "Average Alzheimer Probability",
+                    f"{result['mean_probability']:.2f}"
+                )
 
-            BLOCK_SIZE = 15
-            channel_slow_index = {}
-
-            for idx, ch in enumerate(channels):
-                base = idx * BLOCK_SIZE
-                delta_vals = feature_df.iloc[:, base + 5]
-                alpha_vals = feature_df.iloc[:, base + 7]
-                slow_index = np.mean(delta_vals) - np.mean(alpha_vals)
-                channel_slow_index[ch] = slow_index
-
-            st.subheader("EEG Slow-Wave Topographic Map")
-            fig = plot_topomap(channel_slow_index, title="Delta-Alpha Slow-Wave Dominance")
-            st.pyplot(fig)
-
-            # ======================================================
-            # ========== GLOBAL BANDPOWER ANALYSIS =================
-            # ======================================================
-
-            delta_vals = []
-            theta_vals = []
-            alpha_vals = []
-
-            for col in range(0, feature_df.shape[1], BLOCK_SIZE):
-                delta_vals.extend(feature_df.iloc[:, col + 5])
-                theta_vals.extend(feature_df.iloc[:, col + 6])
-                alpha_vals.extend(feature_df.iloc[:, col + 7])
-
-            avg_delta = np.mean(delta_vals)
-            avg_theta = np.mean(theta_vals)
-            avg_alpha = np.mean(alpha_vals)
-            theta_alpha_ratio = avg_theta / avg_alpha if avg_alpha != 0 else 0
-
-            st.subheader("Neurophysiological Spectral Analysis")
-            st.write(f"Average Delta Power: {avg_delta:.2f}")
-            st.write(f"Average Theta Power: {avg_theta:.2f}")
-            st.write(f"Average Alpha Power: {avg_alpha:.2f}")
-            st.write(f"Theta/Alpha Ratio: {theta_alpha_ratio:.2f}")
-
-            interpretation = []
-
-            if avg_delta > avg_alpha:
-                interpretation.append("Dominance of slow-wave Delta activity detected.")
-            if avg_theta > avg_alpha:
-                interpretation.append("Elevated Theta activity relative to Alpha rhythm.")
-            if theta_alpha_ratio > 1:
-                interpretation.append("High Theta/Alpha ratio indicating cortical slowing.")
-            if avg_alpha < (avg_theta * 0.8):
-                interpretation.append("Reduced Alpha rhythm amplitude observed.")
-
-            if interpretation:
-                st.subheader("EEG Interpretation")
-                for line in interpretation:
-                    st.write(f"• {line}")
-            else:
-                st.write("No significant spectral imbalance detected.")
-
-            # ======================================================
-            # ========== REGION-WISE ANALYSIS ======================
-            # ======================================================
-
-            region_map = {
-                "Frontal": ["Fp1","Fp2","F7","F3","Fz","F4","F8"],
-                "Temporal": ["T3","T4","T5"],
-                "Central": ["C3","C4","Cz"],
-                "Parietal": ["P3","P4","Pz"]
-            }
-
-            st.subheader("Region-wise Slow-Wave Analysis")
-
-            for region, ch_list in region_map.items():
-                region_delta = []
-                region_alpha = []
-
-                for ch in ch_list:
-                    ch_index = channels.index(ch)
-                    base = ch_index * BLOCK_SIZE
-                    region_delta.extend(feature_df.iloc[:, base + 5])
-                    region_alpha.extend(feature_df.iloc[:, base + 7])
-
-                if np.mean(region_delta) > np.mean(region_alpha):
-                    st.write(f"• {region}: Relative slow-wave dominance detected.")
+                if result["majority_vote"] == 1:
+                    st.error("Alzheimer Pattern Detected")
                 else:
-                    st.write(f"• {region}: No significant slowing.")
+                    st.success("Low Alzheimer Pattern Likelihood")
 
-            # ======================================================
-            # ========== MODEL EXPLANATION =========================
-            # ======================================================
+                st.write(f"Model Confidence: {result['confidence_label']} ({result['confidence_score']:.2f})")
+                st.write(f"Window Agreement: {result['window_agreement']:.2f}")
+                st.write(f"Window Variability (Std): {result['window_variability']:.3f}")
+                st.write(f"Total EEG Windows Analyzed: {result['total_windows']}")
+                # ======================================================
+                # ========== CHANNEL-LEVEL SLOW WAVE INDEX =============
+                # ======================================================
 
-            st.subheader("Model Decision Explanation")
+                st.subheader("EEG Slow-Wave Topographic Map")
 
-            st.write(f"""
-The model predicted an Alzheimer probability of {patient_score:.2f} 
-based on spectral feature patterns across EEG windows.
+                channel_slow_index = {}
 
-Primary contributing factors:
+                num_channels = len(raw_df.columns)
 
-• Dominance of low-frequency bands (Delta & Theta)
-• Reduced Alpha rhythm strength
-• Elevated Theta/Alpha ratio
-• Consistency of these patterns across windows
+                features_per_channel = feature_df.shape[1] // num_channels
+
+                for idx, ch in enumerate(raw_df.columns):
+                    base = idx * features_per_channel
+
+                    # Log delta and log alpha were added in feature pipeline
+                    log_delta = feature_df.iloc[:, base + 5]
+                    log_alpha = feature_df.iloc[:, base + 7]
+
+                    slow_index = np.mean(log_delta) - np.mean(log_alpha)
+
+                    channel_slow_index[ch] = slow_index
+
+                fig = plot_topomap(
+                    channel_slow_index,
+                    title="Delta-Alpha Slow-Wave Dominance"
+                )
+
+                st.pyplot(fig)
+
+                # ======================================================
+                # ========== GLOBAL BAND ANALYSIS ======================
+                # ======================================================
+
+                st.subheader("Global Spectral Analysis")
+
+                delta_vals = []
+                theta_vals = []
+                alpha_vals = []
+
+                for idx in range(num_channels):
+                    base = idx * features_per_channel
+
+                    delta_vals.extend(feature_df.iloc[:, base + 5])
+                    theta_vals.extend(feature_df.iloc[:, base + 6])
+                    alpha_vals.extend(feature_df.iloc[:, base + 7])
+
+                avg_delta = np.mean(delta_vals)
+                avg_theta = np.mean(theta_vals)
+                avg_alpha = np.mean(alpha_vals)
+
+                theta_alpha_ratio = avg_theta / avg_alpha if avg_alpha != 0 else 0
+
+                st.write(f"Average Log Delta Power: {avg_delta:.3f}")
+                st.write(f"Average Log Theta Power: {avg_theta:.3f}")
+                st.write(f"Average Log Alpha Power: {avg_alpha:.3f}")
+                st.write(f"Theta/Alpha Ratio: {theta_alpha_ratio:.3f}")
+
+                # ======================================================
+                # ========== REGION-WISE ANALYSIS ======================
+                # ======================================================
+
+                st.subheader("Region-wise Slow-Wave Analysis")
+
+                region_map = {
+                    "Frontal": ["Fp1","Fp2","F7","F3","Fz","F4","F8"],
+                    "Temporal": ["T3","T4","T5"],
+                    "Central": ["C3","C4","Cz"],
+                    "Parietal": ["P3","P4","Pz"]
+                }
+
+                for region, ch_list in region_map.items():
+
+                    region_delta = []
+                    region_alpha = []
+
+                    for ch in ch_list:
+                        if ch in raw_df.columns:
+                            ch_index = list(raw_df.columns).index(ch)
+                            base = ch_index * features_per_channel
+
+                            region_delta.extend(feature_df.iloc[:, base + 5])
+                            region_alpha.extend(feature_df.iloc[:, base + 7])
+
+                    if region_delta and region_alpha:
+                        if np.mean(region_delta) > np.mean(region_alpha):
+                            st.write(f"• {region}: Relative slow-wave dominance detected.")
+                        else:
+                            st.write(f"• {region}: No significant slowing detected.")
+
+                # ======================================================
+                # ========== MODEL EXPLANATION =========================
+                # ======================================================
+
+                st.subheader("Model Decision Explanation")
+
+                st.write(f"""
+The model estimated an Alzheimer probability of {result['mean_probability']:.2f}
+based on calibrated Random Forest predictions across EEG windows.
+
+Decision strength is based on window-level agreement
+({result['window_agreement']:.2f} proportion of windows agreed)..
+
+Lower variability indicates stable spectral patterns across windows.
 """)
 
-            st.subheader("Clinical Recommendation")
+                # ======================================================
+                # ========== CLINICAL NOTE =============================
+                # ======================================================
 
-            st.write("""
-Findings suggest increased likelihood of Alzheimer’s disease.  
-Clinical correlation and neurological evaluation are recommended.
+                st.subheader("Clinical Note")
 
-Suggested next steps:
+                st.write("""
+This tool is designed for research and academic use.
 
-• Cognitive screening (MMSE / MoCA)  
-• Structural MRI (hippocampal assessment)  
-• Laboratory tests to rule out reversible causes  
-• Neurology referral  
+Clinical correlation, cognitive testing,
+and neurological consultation are required
+for any medical interpretation.
 """)
 
 # ==========================================================

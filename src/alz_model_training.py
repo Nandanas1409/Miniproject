@@ -1,47 +1,42 @@
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix
+import numpy as np
 import joblib
 import os
-import numpy as np
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import classification_report, roc_auc_score, roc_curve
 
 # ==========================
 # Configuration
 # ==========================
 INPUT_PATH = "data/processed/alz_window_features.csv"
 MODEL_PATH = "models/alz_rf_model.pkl"
-THRESHOLD = 0.4   # Custom probability threshold
+SCALER_PATH = "models/alz_scaler.pkl"
+THRESHOLD_PATH = "models/alz_threshold.pkl"
 
 os.makedirs("models", exist_ok=True)
 
 # ==========================
-# Load Processed Data
+# Load Data
 # ==========================
-print("Loading processed features...")
 df = pd.read_csv(INPUT_PATH)
 
-print("Total windows:", len(df))
-print("\nClass distribution:")
-print(df["label"].value_counts())
+X = df.drop("label", axis=1)
+y = df["label"]
 
 # ==========================
-# Chronological Split
+# Chronological Class-wise Split
 # ==========================
-df_class0 = df[df["label"] == 0]
-df_class1 = df[df["label"] == 1]
+df0 = df[df["label"] == 0]
+df1 = df[df["label"] == 1]
 
-split0 = int(0.7 * len(df_class0))
-split1 = int(0.7 * len(df_class1))
+split0 = int(0.7 * len(df0))
+split1 = int(0.7 * len(df1))
 
-train_df = pd.concat([
-    df_class0.iloc[:split0],
-    df_class1.iloc[:split1]
-])
-
-test_df = pd.concat([
-    df_class0.iloc[split0:],
-    df_class1.iloc[split1:]
-])
+train_df = pd.concat([df0.iloc[:split0], df1.iloc[:split1]])
+test_df  = pd.concat([df0.iloc[split0:], df1.iloc[split1:]])
 
 X_train = train_df.drop("label", axis=1)
 y_train = train_df["label"]
@@ -49,15 +44,19 @@ y_train = train_df["label"]
 X_test = test_df.drop("label", axis=1)
 y_test = test_df["label"]
 
-print("\nTraining samples:", len(X_train))
-print("Testing samples:", len(X_test))
+# ==========================
+# Scaling
+# ==========================
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled  = scaler.transform(X_test)
+
+joblib.dump(scaler, SCALER_PATH)
 
 # ==========================
-# Train Improved Random Forest
+# Random Forest
 # ==========================
-print("\nTraining Random Forest...")
-
-model = RandomForestClassifier(
+rf = RandomForestClassifier(
     n_estimators=500,
     max_depth=15,
     min_samples_split=5,
@@ -66,27 +65,35 @@ model = RandomForestClassifier(
     n_jobs=-1
 )
 
-model.fit(X_train, y_train)
+# ==========================
+# Calibration
+# ==========================
+model = CalibratedClassifierCV(rf, method="isotonic")
+model.fit(X_train_scaled, y_train)
 
 # ==========================
-# Evaluation with Custom Threshold
+# Evaluation
 # ==========================
-print("\nModel Evaluation\n")
+y_prob = model.predict_proba(X_test_scaled)[:, 1]
 
-y_prob = model.predict_proba(X_test)[:, 1]
-y_pred = (y_prob > THRESHOLD).astype(int)
+# ----- Optimal Threshold (Youden J) -----
+fpr, tpr, thresholds = roc_curve(y_test, y_prob)
+youden_index = tpr - fpr
+best_threshold = thresholds[np.argmax(youden_index)]
 
-print(classification_report(y_test, y_pred))
-print("ROC-AUC Score:", roc_auc_score(y_test, y_prob))
-print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred))
-from evaluation_plots import plot_roc_curve, plot_confusion_matrix
+print("Optimal Threshold:", round(best_threshold, 3))
 
-plot_roc_curve(y_test, y_prob, "alz")
-plot_confusion_matrix(y_test, y_pred, "alz")
+y_pred_optimal = (y_prob > best_threshold).astype(int)
+
+print("\nClassification Report (Optimal Threshold)")
+print(classification_report(y_test, y_pred_optimal))
+
+print("ROC-AUC:", roc_auc_score(y_test, y_prob))
 
 # ==========================
-# Save Model
+# Save Model + Threshold
 # ==========================
 joblib.dump(model, MODEL_PATH)
+joblib.dump(best_threshold, THRESHOLD_PATH)
 
-print("\nModel saved at:", MODEL_PATH)
+print("\nModel, scaler, and threshold saved successfully.")
