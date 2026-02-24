@@ -14,8 +14,7 @@ def extract_alz_features(raw_df):
     channels = raw_df.columns[:-1] if "status" in raw_df.columns else raw_df.columns
 
     features = []
-
-    for start in range(0, len(raw_df) - WINDOW_SIZE, WINDOW_SIZE):
+    for start in range(0, len(raw_df) - WINDOW_SIZE + 1, WINDOW_SIZE):
         window = raw_df.iloc[start:start + WINDOW_SIZE]
         feature_vector = []
 
